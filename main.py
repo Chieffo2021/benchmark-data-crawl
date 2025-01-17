@@ -30,7 +30,7 @@ async def extract_benchmark_result():
     url = 'https://github.com/inikep/lzbench'
 
     async with AsyncWebCrawler(verbose=True) as crawler:
-        result = await crawler.arun(
+        schema_description_result = await crawler.arun(
             url=url,
             word_count_threshold=1,
             excluded_tags=['nav', 'footer'],
@@ -46,6 +46,7 @@ async def extract_benchmark_result():
                 schema=BenchmarkSchemaDescription.model_json_schema(),
                 extraction_type="schema",
                 # chunk_token_threshold=1000,
+                apply_chunking=False, # disable chunking to prevent lose of information
                 instruction="""
                 Find the benchmark data from the given content, which may include software name, software version, source code project, test time, performance indicators, indicator test values, etc. Find these related contents, summarize the way the related contents are provided into a pattern that includes all relevant information, and give 2-3 examples, the sample content should be as consistent as possible with the original content format.
                 The following <example> tag gives you an example of what you would return:
@@ -74,11 +75,39 @@ async def extract_benchmark_result():
             # chunking_strategy=SlidingWindowChunking(),
         )
 
-    if result.extracted_content:
-        model_fees = json.loads(result.extracted_content)
-        print(f"Number of models extracted: {len(model_fees)}")
+    if schema_description_result.extracted_content:
+        async with AsyncWebCrawler(verbose=True) as crawler:
+            result = await crawler.arun(
+                url=url,
+                word_count_threshold=1,
+                excluded_tags=['nav', 'footer'],
+                remove_overlay_elements=True,
+                exclude_external_links=True,
+                exclude_social_media_links=True,
+                exclude_external_images=True,
+                cache_mode=None,
+                extraction_strategy=LLMExtractionStrategy(
+                    api_base="https://api.302.ai",
+                    provider="litellm_proxy/llama3.3-70b",  # Or use ollama like provider="ollama/nemotron"
+                    api_token=os.getenv('LLM_API_KEY'),
+                    schema=BenchmarkResultRaw.model_json_schema(),
+                    extraction_type="schema",
+                    # chunk_token_threshold=1000,
+                    # overlap_rate=0.5,
+                    # apply_chunking=True,
+                    instruction="Combines the given content with the following additional context: <context>"
+                                + schema_description_result.extracted_content
+                                + "</context>, extract benchmark data/result. The context is an overview of the content and abstracts the provisioning patterns and examples of benchmark data. **Do not** extract example data from the context, just extract empty string if the given content does not match the context patterns."
+                ),
+                bypass_cache=True,
+                chunking_strategy=SlidingWindowChunking(window_size=100, step=10),
+            )
 
-        with open(".data/result.json", "w", encoding="utf-8") as f:
-            json.dump(model_fees, f, indent=2)
+        if result.extracted_content:
+            result_json = json.loads(result.extracted_content)
+            print(f"Number of models extracted: {len(result_json)}")
+
+            with open(".data/result.json", "w", encoding="utf-8") as f:
+                json.dump(result_json, f, indent=2)
 
 asyncio.run(extract_benchmark_result())
